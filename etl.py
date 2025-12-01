@@ -1,0 +1,207 @@
+import os
+from meteostat import Point, Daily, Hourly
+from datetime import datetime
+import pandas as pd
+from pathlib import Path
+from dotenv import load_dotenv
+import requests
+import json
+from sqlalchemy import create_engine, text
+
+load_dotenv()
+
+# API endpoints
+API_TRAFFIC = os.getenv("API_TRAFFIC_ENDPOINT")
+API_BORDERS = os.getenv("API_BORDERS_ENDPOINT")
+
+# PostgreSQL credentials
+PGHOST = os.getenv("PGHOST")
+PGPORT = int(os.getenv("PGPORT", "5432"))
+PGDB = os.getenv("PGDB")
+PGUSER = os.getenv("PGUSER")
+PGPASSWORD = os.getenv("PGPASSWORD")
+
+# Set up SQLAlchemy engine to load data into PostgreSQL
+def get_db_engine():
+    """Create SQLAlchemy engine for PostgreSQL"""
+    connection_string = f"postgresql://{PGUSER}:{PGPASSWORD}@{PGHOST}:{PGPORT}/{PGDB}"
+    return create_engine(connection_string)
+
+# Fetch data from API
+def fetch_data_from_api(endpoint, limit=50000):
+    try:
+        print(f"Fetching data from {endpoint}...")
+
+        params = {"$limit": limit}
+        
+        response = requests.get(endpoint, params=params)
+        
+        data = response.json()
+        # Handle GeoJSON format
+        if isinstance(data, dict) and "features" in data:
+            # Extract features from GeoJSON
+            features = data["features"]
+            print(f"Successfully fetched \n")
+            return features
+        else:
+            print(f"Successfully fetched \n")
+            return data
+            
+    except requests.exceptions.RequestException as e:
+        print(f"rror fetching data: {e}")
+        return []
+
+# Fetch weather data using Meteostat
+def fetch_weather_data():    
+    calgary = Point(51.0501, -114.0853, 1042) # Calgary coordinates
+    start = datetime(2022, 1, 1) # Start date
+    end = datetime(2024, 11, 30) # End date
+
+    weather_data = Daily(calgary, start, end)
+    weather_data = weather_data.fetch()
+    weather = weather_data.reset_index()    # Convert index to column
+
+    # All columns
+    weather.columns = ['date', 'avg_temp_c', 'min_temp_c', 'max_temp_c', 
+                       'total_precip_mm', 'snow_depth_cm', 'wind_speed', 
+                       'peak_gust', 'wind_dir', 'atm_pressure', 'sunshine']
+
+    # Select relevant columns
+    weather_clean = weather[['date', 'min_temp_c', 'max_temp_c', 
+                             'total_precip_mm']].copy()
+    
+    print(f"✅ Fetched {len(weather_clean)} weather records\n")
+    return weather_clean
+
+# Convert GeoJSON geometry to WKT (Well-Known Text) for PostGIS
+def geojson_to_wkt(geom):
+    if not geom:
+        return None
+    
+    geom_type = geom.get('type')
+    coords = geom.get('coordinates')
+    
+    if geom_type == 'Point':
+        # point: [lon, lat]
+        return f"POINT({coords[0]} {coords[1]})"
+    
+    elif geom_type == 'MultiPolygon':
+        # multipolygon: [[[[lon, lat], [lon, lat], ...]]]
+        polygons = []
+        for polygon in coords:
+            rings = []
+            for ring in polygon:
+                points = ', '.join([f"{pt[0]} {pt[1]}" for pt in ring])
+                rings.append(f"({points})")
+            polygons.append(f"({', '.join(rings)})")
+        return f"MULTIPOLYGON({', '.join(polygons)})"
+    
+    return None
+
+# Convert JSON/GeoJSON data to pandas DataFrame with PostGIS geometries
+def json_to_dataframe(data):
+    if not data:
+        return pd.DataFrame()
+    
+    records = []
+    for item in data:
+        if 'properties' in item:
+            # GeoJSON format - extract properties
+            record = item['properties'].copy()
+            if 'geometry' in item and item['geometry']:
+                # Convert GeoJSON geometry to WKT for PostGIS
+                record['geometry'] = geojson_to_wkt(item['geometry'])
+        else:
+            # Regular JSON
+            record = item.copy()
+            # Convert any dict/list fields to JSON strings
+            for key, value in record.items():
+                if isinstance(value, (dict, list)):
+                    # Convert multipolygon and other complex fields to WKT
+                    if key == 'multipolygon' and isinstance(value, dict):
+                        record[key] = geojson_to_wkt(value)
+                    else:
+                        record[key] = json.dumps(value)
+        records.append(record)
+    
+    df = pd.DataFrame(records)
+    return df
+
+
+def load_to_postgres(df, table_name, engine, if_exists='replace', has_geometry=False):
+    try:
+        df.to_sql(table_name, engine, if_exists=if_exists, index=False)
+        print(f"successfully saved to '{table_name}' table")
+        
+        # Convert geometry column to PostGIS geometry type
+        if has_geometry and 'geometry' in df.columns:
+            with engine.connect() as conn:                
+                # Add geometry column (if not exists) and populate it
+                conn.execute(text(f"""
+                    ALTER TABLE {table_name} 
+                    ADD COLUMN IF NOT EXISTS geom geometry;
+                """))
+                conn.commit()
+                
+                conn.execute(text(f"""
+                    UPDATE {table_name} 
+                    SET geom = ST_GeomFromText(geometry, 4326)
+                    WHERE geometry IS NOT NULL;
+                """))
+                conn.commit()
+                        
+        # Verify the data was saved
+        with engine.connect() as conn:
+            result = conn.execute(text(f"SELECT COUNT(*) FROM {table_name}"))
+            count = result.scalar()
+            print(f"number of rows verifired\n")
+            
+    except Exception as e:
+        print(f"error {e}\n")
+
+
+def main():
+
+    engine = get_db_engine()    
+    # Enable PostGIS extension
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("CREATE EXTENSION IF NOT EXISTS postgis;"))
+            conn.commit()
+            print("✅ PostGIS extension enabled\n")
+    except Exception as e:
+        print(f"PostGIS warning: {e}\n")
+    
+    # ========== 1. WEATHER DATA ==========
+
+    weather_df = fetch_weather_data()
+    load_to_postgres(weather_df, 'weather', engine)
+    
+    # ========== 2. TRAFFIC INCIDENTS ==========
+    traffic_data = fetch_data_from_api(API_TRAFFIC, limit=50000)
+    if traffic_data:
+        traffic_df = json_to_dataframe(traffic_data)
+        print("Traffic columns:", traffic_df.columns.tolist())
+        # Available: ['count', 'latitude', 'description', 'incident_info', 'start_dt', 'modified_dt', 'longitude', 'id', 'quadrant', 'geometry']
+        traffic_clean = traffic_df[['description', 'incident_info', 'start_dt', 'quadrant', 'latitude', 'longitude', 'geometry']]
+        
+        load_to_postgres(traffic_clean, 'traffic_incidents', engine, has_geometry=True)
+    else:
+        print("No traffic data fetched\n")
+        
+    # ========== 3. COMMUNITY BOUNDARIES ==========
+    borders_data = fetch_data_from_api(API_BORDERS, limit=50000)
+    if borders_data:
+        borders_df = json_to_dataframe(borders_data)
+        print("Borders columns:", borders_df.columns.tolist())
+        # Available: ['comm_structure', 'class', 'comm_code', 'name', 'sector', 'srg', 'class_code', 'created_dt', 'modified_dt', 'geometry']
+        borders_clean = borders_df[['name', 'comm_code', 'class', 'sector', 'srg', 'geometry']]
+        
+        load_to_postgres(borders_clean, 'community_boundaries', engine, has_geometry=True)
+    else:
+        print("No borders data fetched\n")
+
+
+
+if __name__ == "__main__":
+    main()
