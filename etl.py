@@ -16,7 +16,7 @@ API_BORDERS = os.getenv("API_BORDERS_ENDPOINT")
 
 # PostgreSQL credentials
 PGHOST = os.getenv("PGHOST")
-PGPORT = int(os.getenv("PGPORT", "5432"))
+PGPORT = int(os.getenv("PGPORT"))
 PGDB = os.getenv("PGDB")
 PGUSER = os.getenv("PGUSER")
 PGPASSWORD = os.getenv("PGPASSWORD")
@@ -54,8 +54,8 @@ def fetch_data_from_api(endpoint, limit=50000):
 # Fetch weather data using Meteostat
 def fetch_weather_data():    
     calgary = Point(51.0501, -114.0853, 1042) # Calgary coordinates
-    start = datetime(2022, 1, 1) # Start date
-    end = datetime(2024, 11, 30) # End date
+    start = datetime(2025, 10, 1) # Start date
+    end = datetime(2025, 11, 30) # End date
 
     weather_data = Daily(calgary, start, end)
     weather_data = weather_data.fetch()
@@ -181,9 +181,8 @@ def main():
     traffic_data = fetch_data_from_api(API_TRAFFIC, limit=50000)
     if traffic_data:
         traffic_df = json_to_dataframe(traffic_data)
-        print("Traffic columns:", traffic_df.columns.tolist())
         # Available: ['count', 'latitude', 'description', 'incident_info', 'start_dt', 'modified_dt', 'longitude', 'id', 'quadrant', 'geometry']
-        traffic_clean = traffic_df[['description', 'incident_info', 'start_dt', 'quadrant', 'latitude', 'longitude', 'geometry']]
+        traffic_clean = traffic_df[['start_dt','geometry']]
         
         load_to_postgres(traffic_clean, 'traffic_incidents', engine, has_geometry=True)
     else:
@@ -193,9 +192,8 @@ def main():
     borders_data = fetch_data_from_api(API_BORDERS, limit=50000)
     if borders_data:
         borders_df = json_to_dataframe(borders_data)
-        print("Borders columns:", borders_df.columns.tolist())
         # Available: ['comm_structure', 'class', 'comm_code', 'name', 'sector', 'srg', 'class_code', 'created_dt', 'modified_dt', 'geometry']
-        borders_clean = borders_df[['name', 'comm_code', 'class', 'sector', 'srg', 'geometry']]
+        borders_clean = borders_df[['name', 'geometry']]
         
         load_to_postgres(borders_clean, 'community_boundaries', engine, has_geometry=True)
     else:
