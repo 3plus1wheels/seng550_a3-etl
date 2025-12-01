@@ -130,34 +130,52 @@ def json_to_dataframe(data):
 
 def load_to_postgres(df, table_name, engine, if_exists='replace', has_geometry=False):
     try:
+        # Load data to PostgreSQL
         df.to_sql(table_name, engine, if_exists=if_exists, index=False)
-        print(f"successfully saved to '{table_name}' table")
         
-        # Convert geometry column to PostGIS geometry type
         if has_geometry and 'geometry' in df.columns:
-            with engine.connect() as conn:                
-                # Add geometry column (if not exists) and populate it
-                conn.execute(text(f"""
-                    ALTER TABLE {table_name} 
-                    ADD COLUMN IF NOT EXISTS geom geometry;
-                """))
-                conn.commit()
+            with engine.connect() as conn:
+                # Try to use PostGIS if available, fallback to text
+                try:
+                    # Test if PostGIS is available
+                    conn.execute(text("SELECT PostGIS_Version();"))
+                    
+                    # PostGIS is available - convert to proper geometry type
+                    conn.execute(text(f"""
+                        ALTER TABLE {table_name} 
+                        ADD COLUMN geom geometry(GEOMETRY, 4326);
+                    """))
+                    
+                    conn.execute(text(f"""
+                        UPDATE {table_name} 
+                        SET geom = ST_GeomFromText(geometry, 4326)
+                        WHERE geometry IS NOT NULL;
+                    """))
+                    
+                    conn.execute(text(f"ALTER TABLE {table_name} DROP COLUMN geometry;"))
+                    conn.execute(text(f"ALTER TABLE {table_name} RENAME COLUMN geom TO geometry;"))
+                    
+                    print(f"✅ PostGIS geometry columns created")
+                    
+                except Exception:
+                    # PostGIS not available - add geometry type info as comment
+                    conn.execute(text(f"""
+                        COMMENT ON COLUMN {table_name}.geometry IS 'WKT geometry data (SRID: 4326)';
+                    """))
+                    print(f"ℹ️  Geometry stored as WKT text (PostGIS unavailable)")
                 
-                conn.execute(text(f"""
-                    UPDATE {table_name} 
-                    SET geom = ST_GeomFromText(geometry, 4326)
-                    WHERE geometry IS NOT NULL;
-                """))
                 conn.commit()
+        
+        print(f"✅ Successfully saved to '{table_name}' table")
                         
         # Verify the data was saved
         with engine.connect() as conn:
             result = conn.execute(text(f"SELECT COUNT(*) FROM {table_name}"))
             count = result.scalar()
-            print(f"number of rows verifired\n")
+            print(f"📊 {count} rows verified\n")
             
     except Exception as e:
-        print(f"error {e}\n")
+        print(f"❌ Error loading to {table_name}: {e}\n")
 
 
 def main():
