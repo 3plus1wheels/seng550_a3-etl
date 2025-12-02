@@ -291,13 +291,28 @@ def create_accident_analysis_table(engine):
     #Create denormalized table for FAST accident analysis (will not be deleted on reruns)
     
     with engine.connect() as conn:
-        conn.execute(text(create_acc_fact_table))
-        conn.commit()
+        # Check if table exists first
+        exists = conn.execute(text("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_schema = 'public' 
+                AND table_name = 'accident_facts'
+            );
+        """))
+        table_exists = exists.scalar()
+
+        if not table_exists:
+            print("Creating accident analysis table...")
+            conn.execute(text(create_acc_fact_table))
+            conn.commit()
+        else:
+            print("Accident analysis table already exists, skipping creation...")
+            return
         
         # Show row count
         result = conn.execute(text("SELECT COUNT(*) FROM accident_facts;"))
         count = result.scalar()
-        print(f"Accident analysis table created with {count} records\n")
+        print(f"Accident analysis table has {count} records\n")
         
 def update_accident_analysis_table(engine):
     #Update denormalized table for SPEEDY accident analysis. This upserts existing table.
@@ -340,7 +355,8 @@ def main():
     if traffic_data:
         traffic_df = json_to_dataframe(traffic_data)
         # Available: ['count', 'latitude', 'description', 'incident_info', 'start_dt', 'modified_dt', 'longitude', 'id', 'quadrant', 'geometry']
-        traffic_clean = traffic_df[['start_dt','geometry', 'modified_dt', 'id']]
+        
+        traffic_clean = traffic_df[['start_dt', 'geometry', 'modified_dt']].copy()
         
         load_to_postgres(traffic_clean, 'traffic_incidents', engine, has_geometry=True)
     else:

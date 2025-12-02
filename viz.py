@@ -2,7 +2,7 @@
 Used for getting POSTGIS setup/connection in python:
 https://medium.com/nerd-for-tech/geographic-data-visualization-using-geopandas-and-postgresql-7578965dedfe
 Used for streamlit:
-
+https://medium.com/@verinamk/streamlit-for-beginners-build-your-first-dashboard-58b764a62a2d
 '''
 
 
@@ -23,11 +23,19 @@ import pydeck as pdk
 
 load_dotenv()
 # Connecting to PostgreSQL database
-host = os.getenv("PGHOST", "localhost")
-port = os.getenv("PGPORT", "5432")
-dbname = os.getenv("PGDB", "a3_db")
-user = os.getenv("PGUSER", "postgres")
-password = os.getenv("PGPASS", "mcfruity")
+# Use Streamlit secrets in production, .env in development
+if "PGHOST" in st.secrets:
+    host = st.secrets["PGHOST"]
+    port = st.secrets["PGPORT"]
+    dbname = st.secrets["PGDB"]
+    user = st.secrets["PGUSER"]
+    password = st.secrets["PGPASSWORD"]
+else:
+    host = os.getenv("PGHOST", "localhost")
+    port = os.getenv("PGPORT", "5432")
+    dbname = os.getenv("PGDB", "a3_db")
+    user = os.getenv("PGUSER", "postgres")
+    password = os.getenv("PGPASS", "mcfruity")
 
 connection_string = f"postgresql://{user}:{password}@{host}:{port}/{dbname}"
 engine = create_engine(connection_string)

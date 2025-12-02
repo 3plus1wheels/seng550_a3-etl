@@ -92,18 +92,18 @@ ORDER BY w.date;
 
 # Table for accident analysis with weather data
 create_acc_fact_table = """
-CREATE TABLE IF NOT EXISTS accident_facts (
-    incident_id INTEGER PRIMARY KEY,
-    occurred_date DATE,
+CREATE TABLE accident_facts (
+    occurred_date TIMESTAMP NOT NULL,
     modified_dt TIMESTAMP,
-    community_name TEXT,
+    district_name TEXT,
     min_temp_c FLOAT,
     max_temp_c FLOAT,
     total_precip_mm FLOAT,
-    accident_lon FLOAT,
-    accident_lat FLOAT,
+    accident_lon FLOAT NOT NULL,
+    accident_lat FLOAT NOT NULL,
     accident_geom GEOMETRY(POINT, 4326),
-    community_geom GEOMETRY(MULTIPOLYGON, 4326)
+    community_geom GEOMETRY(MULTIPOLYGON, 4326),
+    PRIMARY KEY (occurred_date, accident_lon, accident_lat)
 );
     
 -- Indexes for fast querying
@@ -112,17 +112,16 @@ CREATE INDEX IF NOT EXISTS idx_accident_facts_geom
 CREATE INDEX IF NOT EXISTS idx_accident_facts_date
     ON accident_facts (occurred_date);
 CREATE INDEX IF NOT EXISTS idx_accident_facts_community
-    ON accident_facts (community_name);
+    ON accident_facts  (district_name);
 CREATE INDEX IF NOT EXISTS idx_accident_facts_precip
     ON accident_facts (total_precip_mm);
 """
 
 update_acc_fact_data = """
 INSERT INTO accident_facts (
-    incident_id,
     occurred_date,
     modified_dt,
-    community_name,
+    district_name,
     min_temp_c,
     max_temp_c,
     total_precip_mm,
@@ -131,11 +130,10 @@ INSERT INTO accident_facts (
     accident_geom,
     community_geom
 )
-SELECT
-    ti.id::INTEGER AS incident_id,
-    ti.start_dt::timestamp::date AS occurred_date,
+SELECT DISTINCT ON (occurred_date, accident_lon, accident_lat) -- will keep the last modified_dt
+    ti.start_dt::timestamp AS occurred_date,
     ti.modified_dt::timestamp AS modified_dt,
-    cb.name AS community_name,
+    cb.name AS district_name,
     w.min_temp_c,
     w.max_temp_c,
     w.total_precip_mm,
@@ -148,16 +146,15 @@ LEFT JOIN community_boundaries cb
     ON ST_Contains(cb.geometry, ti.geometry)
 LEFT JOIN weather w
     ON ti.start_dt::timestamp::date = w.date
-ON CONFLICT (incident_id) DO UPDATE 
+WHERE ti.geometry IS NOT NULL
+ORDER BY occurred_date, accident_lon, accident_lat, ti.modified_dt DESC
+ON CONFLICT (occurred_date, accident_lon, accident_lat) DO UPDATE 
 SET
-    occurred_date = EXCLUDED.occurred_date,
     modified_dt = EXCLUDED.modified_dt,
-    community_name = EXCLUDED.community_name,
+ district_name = EXCLUDED.district_name,
     min_temp_c = EXCLUDED.min_temp_c,
     max_temp_c = EXCLUDED.max_temp_c,
     total_precip_mm = EXCLUDED.total_precip_mm,
-    accident_lon = EXCLUDED.accident_lon,
-    accident_lat = EXCLUDED.accident_lat,
     accident_geom = EXCLUDED.accident_geom,
     community_geom = EXCLUDED.community_geom
 WHERE accident_facts.modified_dt < EXCLUDED.modified_dt;
