@@ -1,4 +1,4 @@
-etl.py
+# etl.py
 import os
 from meteostat import Point, Daily, Hourly
 from datetime import datetime
@@ -162,6 +162,17 @@ def json_to_dataframe(data):
 def load_to_postgres(df, table_name, engine, if_exists='replace', has_geometry=False):
     """Load DataFrame to PostgreSQL table with optional PostGIS geometry handling"""
     try:
+        # Drop dependent materialized views first if replacing tables
+        if if_exists == 'replace':
+            with engine.connect() as conn:
+                if table_name in ['traffic_incidents', 'community_boundaries', 'weather']:
+                    try:
+                        conn.execute(text("DROP MATERIALIZED VIEW IF EXISTS accident_geo_view CASCADE;"))
+                        conn.commit()
+                        print(f"Dropped dependent views for {table_name}")
+                    except Exception as e:
+                        print(f"Note: {e}")
+        
         # Load data to PostgreSQL
         df.to_sql(table_name, engine, if_exists=if_exists, index=False)
         
@@ -280,13 +291,28 @@ def create_accident_analysis_table(engine):
     #Create denormalized table for FAST accident analysis (will not be deleted on reruns)
     
     with engine.connect() as conn:
-        conn.execute(text(create_acc_fact_table))
-        conn.commit()
+        # Check if table exists first
+        exists = conn.execute(text("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_schema = 'public' 
+                AND table_name = 'accident_facts'
+            );
+        """))
+        table_exists = exists.scalar()
+
+        if not table_exists:
+            print("Creating accident analysis table...")
+            conn.execute(text(create_acc_fact_table))
+            conn.commit()
+        else:
+            print("Accident analysis table already exists, skipping creation...")
+            return
         
         # Show row count
-        result = conn.execute(text("SELECT COUNT(*) FROM acc_facts;"))
+        result = conn.execute(text("SELECT COUNT(*) FROM accident_facts;"))
         count = result.scalar()
-        print(f"Accident analysis table created with {count} records\n")
+        print(f"Accident analysis table has {count} records\n")
         
 def update_accident_analysis_table(engine):
     #Update denormalized table for SPEEDY accident analysis. This upserts existing table.
@@ -296,7 +322,7 @@ def update_accident_analysis_table(engine):
         conn.commit()
         
         # Show row count
-        result = conn.execute(text("SELECT COUNT(*) FROM acc_facts;"))
+        result = conn.execute(text("SELECT COUNT(*) FROM accident_facts;"))
         count = result.scalar()
         print(f"Accident analysis table updated with {count} records\n")
         
@@ -329,7 +355,8 @@ def main():
     if traffic_data:
         traffic_df = json_to_dataframe(traffic_data)
         # Available: ['count', 'latitude', 'description', 'incident_info', 'start_dt', 'modified_dt', 'longitude', 'id', 'quadrant', 'geometry']
-        traffic_clean = traffic_df[['start_dt','geometry', 'modified_dt', 'id']]
+        
+        traffic_clean = traffic_df[['start_dt', 'geometry', 'modified_dt']].copy()
         
         load_to_postgres(traffic_clean, 'traffic_incidents', engine, has_geometry=True)
     else:

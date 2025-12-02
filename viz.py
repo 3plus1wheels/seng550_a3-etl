@@ -2,7 +2,7 @@
 Used for getting POSTGIS setup/connection in python:
 https://medium.com/nerd-for-tech/geographic-data-visualization-using-geopandas-and-postgresql-7578965dedfe
 Used for streamlit:
-
+https://medium.com/@verinamk/streamlit-for-beginners-build-your-first-dashboard-58b764a62a2d
 '''
 
 
@@ -23,11 +23,19 @@ import pydeck as pdk
 
 load_dotenv()
 # Connecting to PostgreSQL database
-host = os.getenv("PGHOST", "localhost")
-port = os.getenv("PGPORT", "5432")
-dbname = os.getenv("PGDB", "a3_db")
-user = os.getenv("PGUSER", "postgres")
-password = os.getenv("PGPASS", "mcfruity")
+# Use Streamlit secrets in production, .env in development
+if "PGHOST" in st.secrets:
+    host = st.secrets["PGHOST"]
+    port = st.secrets["PGPORT"]
+    dbname = st.secrets["PGDB"]
+    user = st.secrets["PGUSER"]
+    password = st.secrets["PGPASSWORD"]
+else:
+    host = os.getenv("PGHOST", "localhost")
+    port = os.getenv("PGPORT", "5432")
+    dbname = os.getenv("PGDB", "a3_db")
+    user = os.getenv("PGUSER", "postgres")
+    password = os.getenv("PGPASS", "mcfruity")
 
 connection_string = f"postgresql://{user}:{password}@{host}:{port}/{dbname}"
 engine = create_engine(connection_string)
@@ -53,7 +61,7 @@ def plot_accidents():
 
 @st.cache_data(ttl=300) # Performance improvement - cache for 5 minutes
 def load_accidents_detailed():
-    # Load accidents from materialized view
+    # switched from loading materialized view to a regular view in a fact table for up-to-date data
     query = """
         SELECT
             occurred_at,
@@ -65,7 +73,7 @@ def load_accidents_detailed():
             total_precip_mm,
             lon,
             lat
-        FROM accident_geo_view;  -- ← Using materialized view now
+        FROM accident_facts;  -- ← Using materialized view now
     """
     gdf = gpd.read_postgis(query, engine, geom_col="geom")
     gdf["occurred_at"] = pd.to_datetime(gdf["occurred_at"])
@@ -306,5 +314,3 @@ with col_summary:
     st.metric("Total Accidents", len(filt_acc))
     st.metric("Avg Temperature (°C)", f"{filt_acc['min_temp_c'].mean():.1f} - {filt_acc['max_temp_c'].mean():.1f}")
     st.metric("Avg Precipitation (mm)", f"{filt_acc['total_precip_mm'].mean():.2f}")
-    
-   
