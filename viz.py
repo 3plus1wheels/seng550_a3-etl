@@ -23,11 +23,19 @@ from queries import acc_view, acc_district_query, acc_weather_query
 
 load_dotenv()
 # Connecting to PostgreSQL database
-host = os.getenv("PGHOST", "localhost")
-port = os.getenv("PGPORT", "5432")
-dbname = os.getenv("PGDB", "A2")
-user = os.getenv("PGUSER", "postgres")
-password = os.getenv("PGPASS")
+# Use Streamlit secrets in production, .env in development
+if "PGHOST" in st.secrets:
+    host = st.secrets["PGHOST"]
+    port = int(st.secrets["PGPORT"])
+    dbname = st.secrets["PGDB"]
+    user = st.secrets["PGUSER"]
+    password = st.secrets["PGPASSWORD"]
+else:
+    host = os.getenv("PGHOST", "localhost")
+    port = os.getenv("PGPORT", "5432")
+    dbname = os.getenv("PGDB", "a3_db")
+    user = os.getenv("PGUSER", "postgres")
+    password = os.getenv("PGPASS", "mcfruity")
 
 connection_string = f"postgresql://{user}:{password}@{host}:{port}/{dbname}"
 engine = create_engine(connection_string)
