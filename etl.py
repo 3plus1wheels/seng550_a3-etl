@@ -77,7 +77,7 @@ def fetch_data_from_api(endpoint, limit=50000):
             return data
             
     except requests.exceptions.RequestException as e:
-        print(f"rror fetching data: {e}")
+        print(f"Error fetching data: {e}")
         return []
 
 # Fetch weather data using Meteostat
@@ -234,6 +234,9 @@ def main():
         traffic_df = json_to_dataframe(traffic_data)
         # Available: ['count', 'latitude', 'description', 'incident_info', 'start_dt', 'modified_dt', 'longitude', 'id', 'quadrant', 'geometry']
         traffic_clean = traffic_df[['start_dt','geometry']]
+
+        # Convert start_dt to timestamp without timezone
+        traffic_clean['start_dt'] = pd.to_datetime(traffic_clean['start_dt']).dt.tz_localize(None)
         
         load_to_postgres(traffic_clean, 'traffic_incidents', engine, has_geometry=True)
     else:
