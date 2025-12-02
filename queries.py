@@ -93,22 +93,18 @@ ORDER BY w.date;
 # Table for accident analysis with weather data
 create_acc_fact_table = """
 CREATE TABLE IF NOT EXISTS accident_facts (
-    ti.id AS incident_id,
-    ti.start_dt::date AS occurred_date,
-    ti.modified_dt AS modified_dt,
-    cb.name AS community_name,
-    w.min_temp_c,
-    w.max_temp_c,
-    w.total_precip_mm,
-    ST_X(ti.geometry) AS accident_lon,
-    ST_Y(ti.geometry) AS accident_lat,
-    ti.geometry AS accident_geom,
-    cb.geometry AS community_geom
-FROM traffic_incidents ti
-LEFT JOIN community_boundaries cb
-    ON ST_Contains(cb.geometry, ti.geometry)
-LEFT JOIN weather w
-    ON ti.start_dt::date = w.date;
+    incident_id INTEGER PRIMARY KEY,
+    occurred_date DATE,
+    modified_dt TIMESTAMP,
+    community_name TEXT,
+    min_temp_c FLOAT,
+    max_temp_c FLOAT,
+    total_precip_mm FLOAT,
+    accident_lon FLOAT,
+    accident_lat FLOAT,
+    accident_geom GEOMETRY(POINT, 4326),
+    community_geom GEOMETRY(MULTIPOLYGON, 4326)
+);
     
 -- Indexes for fast querying
 CREATE INDEX IF NOT EXISTS idx_accident_facts_geom
@@ -130,22 +126,28 @@ INSERT INTO accident_facts (
     min_temp_c,
     max_temp_c,
     total_precip_mm,
-    geometry
+    accident_lon,
+    accident_lat,
+    accident_geom,
+    community_geom
 )
 SELECT
-    ti.id AS incident_id,
-    ti.start_dt::date AS occurred_date,
-    ti.modified_dt AS modified_dt,
+    ti.id::INTEGER AS incident_id,
+    ti.start_dt::timestamp::date AS occurred_date,
+    ti.modified_dt::timestamp AS modified_dt,
     cb.name AS community_name,
     w.min_temp_c,
     w.max_temp_c,
     w.total_precip_mm,
-    ti.geometry
+    ST_X(ti.geometry) AS accident_lon,
+    ST_Y(ti.geometry) AS accident_lat,
+    ti.geometry AS accident_geom,
+    cb.geometry AS community_geom
 FROM traffic_incidents ti
 LEFT JOIN community_boundaries cb
     ON ST_Contains(cb.geometry, ti.geometry)
 LEFT JOIN weather w
-    ON ti.start_dt::date = w.date
+    ON ti.start_dt::timestamp::date = w.date
 ON CONFLICT (incident_id) DO UPDATE 
 SET
     occurred_date = EXCLUDED.occurred_date,
@@ -154,10 +156,12 @@ SET
     min_temp_c = EXCLUDED.min_temp_c,
     max_temp_c = EXCLUDED.max_temp_c,
     total_precip_mm = EXCLUDED.total_precip_mm,
-    geometry = EXCLUDED.geometry;
-WHERE accident_facts.modified_dt < EXCLUDED.modified_dt; -- only update if new data is more recent
+    accident_lon = EXCLUDED.accident_lon,
+    accident_lat = EXCLUDED.accident_lat,
+    accident_geom = EXCLUDED.accident_geom,
+    community_geom = EXCLUDED.community_geom
+WHERE accident_facts.modified_dt < EXCLUDED.modified_dt;
 """
-
 
 
 # Accidents with weather conditions at time and location of accident -

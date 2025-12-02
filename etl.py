@@ -1,4 +1,4 @@
-etl.py
+# etl.py
 import os
 from meteostat import Point, Daily, Hourly
 from datetime import datetime
@@ -162,6 +162,17 @@ def json_to_dataframe(data):
 def load_to_postgres(df, table_name, engine, if_exists='replace', has_geometry=False):
     """Load DataFrame to PostgreSQL table with optional PostGIS geometry handling"""
     try:
+        # Drop dependent materialized views first if replacing tables
+        if if_exists == 'replace':
+            with engine.connect() as conn:
+                if table_name in ['traffic_incidents', 'community_boundaries', 'weather']:
+                    try:
+                        conn.execute(text("DROP MATERIALIZED VIEW IF EXISTS accident_geo_view CASCADE;"))
+                        conn.commit()
+                        print(f"Dropped dependent views for {table_name}")
+                    except Exception as e:
+                        print(f"Note: {e}")
+        
         # Load data to PostgreSQL
         df.to_sql(table_name, engine, if_exists=if_exists, index=False)
         
@@ -284,7 +295,7 @@ def create_accident_analysis_table(engine):
         conn.commit()
         
         # Show row count
-        result = conn.execute(text("SELECT COUNT(*) FROM acc_facts;"))
+        result = conn.execute(text("SELECT COUNT(*) FROM accident_facts;"))
         count = result.scalar()
         print(f"Accident analysis table created with {count} records\n")
         
@@ -296,7 +307,7 @@ def update_accident_analysis_table(engine):
         conn.commit()
         
         # Show row count
-        result = conn.execute(text("SELECT COUNT(*) FROM acc_facts;"))
+        result = conn.execute(text("SELECT COUNT(*) FROM accident_facts;"))
         count = result.scalar()
         print(f"Accident analysis table updated with {count} records\n")
         
