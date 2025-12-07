@@ -9,7 +9,8 @@ https://medium.com/@verinamk/streamlit-for-beginners-build-your-first-dashboard-
 import geopandas as gpd
 from sqlalchemy import create_engine
 import os
-from dotenv import load_dotenv
+from dotenv import load_dotenv, dotenv_values
+from pathlib import Path
 import json
 import pandas as pd
 import streamlit as st
@@ -21,24 +22,116 @@ import pydeck as pdk
 # traffic_incidents(start_dt, geometry)
 # community_boundaries(name, geometry)
 
-load_dotenv()
-# Connecting to PostgreSQL database
-# Use Streamlit secrets in production, .env in development
-if "PGHOST" in st.secrets:
-    host = st.secrets["PGHOST"]
-    port = st.secrets["PGPORT"]
-    dbname = st.secrets["PGDB"]
-    user = st.secrets["PGUSER"]
-    password = st.secrets["PGPASSWORD"]
-else:
-    host = os.getenv("PGHOST", "localhost")
-    port = os.getenv("PGPORT", "5432")
-    dbname = os.getenv("PGDB", "a3_db")
-    user = os.getenv("PGUSER", "postgres")
-    password = os.getenv("PGPASS", "mcfruity")
+# Load .env file for local development (override=True to override system env vars)
+# Use an explicit path so Streamlit's working directory won't affect finding the file
+env_path = Path(__file__).parent.joinpath('.env')
+load_dotenv(dotenv_path=env_path, override=True)
 
-connection_string = f"postgresql://{user}:{password}@{host}:{port}/{dbname}"
-engine = create_engine(connection_string)
+# Build database connection string.
+# New order of precedence (local-first):
+# 1) .env `DATABASE_URL` (explicitly from repo .env) - local development convenience
+# 2) Streamlit secrets: DATABASE_URL/DB_URL or PG* keys - cloud deployment
+# 3) process environment PG* keys
+env_path = Path(__file__).parent.joinpath('.env')
+file_db_url = None
+if env_path.exists():
+    file_vals = dotenv_values(env_path)
+    file_db_url = file_vals.get('DATABASE_URL')
+
+connection_string = None
+
+# 1) Prefer repo .env DATABASE_URL when present (local-first)
+if file_db_url:
+    connection_string = file_db_url
+else:
+    # 2) Streamlit secrets (cloud)
+    if hasattr(st, "secrets") and st.secrets and len(st.secrets) > 0:
+        secrets = st.secrets
+        connection_string = (
+            secrets.get("DATABASE_URL")
+            or secrets.get("DB_URL")
+        )
+        if not connection_string:
+            for v in secrets.values():
+                if isinstance(v, str) and v.startswith("postgres") and "@" in v:
+                    connection_string = v
+                    break
+        if not connection_string and "PGHOST" in secrets:
+            host = secrets.get("PGHOST")
+            port = str(secrets.get("PGPORT", "5432"))
+            dbname = secrets.get("PGDB")
+            user = secrets.get("PGUSER")
+            password = secrets.get("PGPASSWORD")
+            connection_string = f"postgresql://{user}:{password}@{host}:{port}/{dbname}"
+
+    # 3) process environment (fallback)
+    if not connection_string:
+        host = os.getenv("PGHOST", "localhost")
+        port = os.getenv("PGPORT", "5432")
+        dbname = os.getenv("PGDB", "a3_db")
+        user = os.getenv("PGUSER", "postgres")
+        password = os.getenv("PGPASSWORD", "")
+        connection_string = f"postgresql://{user}:{password}@{host}:{port}/{dbname}"
+
+# Final fallback: read .env file directly if the process env still points to localhost
+if connection_string and ("localhost" in connection_string or "127.0.0.1" in connection_string):
+    # Try to read the repo .env values directly (in case system env overrides are set)
+    env_path = Path(__file__).parent.joinpath('.env')
+    if env_path.exists():
+        dotvals = dotenv_values(env_path)
+        # Prefer DATABASE_URL from .env
+        file_db_url = dotvals.get('DATABASE_URL')
+        if file_db_url:
+            connection_string = file_db_url
+        else:
+            fh = dotvals.get('PGHOST')
+            if fh and fh != 'localhost':
+                host = fh
+                port = dotvals.get('PGPORT', port)
+                dbname = dotvals.get('PGDB', dbname)
+                user = dotvals.get('PGUSER', user)
+                password = dotvals.get('PGPASSWORD', password)
+                connection_string = f"postgresql://{user}:{password}@{host}:{port}/{dbname}"
+
+# Ensure SSL for cloud hosts when not explicitly set
+if "@" in connection_string and "localhost" not in connection_string and "127.0.0.1" not in connection_string:
+    if "sslmode=" not in connection_string:
+        if "?" in connection_string:
+            connection_string += "&sslmode=require"
+        else:
+            connection_string += "?sslmode=require"
+
+# Sanitize connection string (remove leading 'psql ', surrounding quotes)
+cs = connection_string.strip()
+if cs.startswith("psql "):
+    cs = cs[len("psql "):].strip()
+if (cs.startswith("'") and cs.endswith("'")) or (cs.startswith('"') and cs.endswith('"')):
+    cs = cs[1:-1]
+
+def _mask_pw(s: str) -> str:
+    try:
+        proto, rest = s.split('://', 1)
+        creds, hostpart = rest.split('@', 1)
+        if ':' in creds:
+            user, pw = creds.split(':', 1)
+            return f"{proto}://{user}:***@{hostpart}"
+    except Exception:
+        return s
+masked = _mask_pw(cs)
+
+# Show which connection string source is being used (masked)
+st.info(f"Using DB connection: {masked}")
+
+try:
+    # If connecting to localhost, don't force SSL connect args
+    if "localhost" in cs or "127.0.0.1" in cs:
+        engine = create_engine(cs)
+    else:
+        # For cloud DBs (Neon/Supabase) ensure SSL mode is passed to the DBAPI
+        engine = create_engine(cs, connect_args={"sslmode": "require"})
+except Exception as e:
+    st.error(f"Failed to create DB engine from connection string: {masked}\n\nError: {e}")
+    st.stop()
 
 
 # Basic viz: just accidents on map. To test database connection and geopandas read
@@ -64,20 +157,32 @@ def load_accidents_detailed():
     # switched from loading materialized view to a regular view in a fact table for up-to-date data
     query = """
         SELECT
-            occurred_at,
-            geom,
+            occurred_date,
+            accident_geom,
             district_name,
-            weather_date,
             min_temp_c,
             max_temp_c,
             total_precip_mm,
-            lon,
-            lat
+            accident_lon,
+            accident_lat
         FROM accident_facts;  -- ← Using materialized view now
     """
-    gdf = gpd.read_postgis(query, engine, geom_col="geom")
+    # Read using actual geom column name from the table
+    gdf = gpd.read_postgis(query, engine, geom_col="accident_geom")
+
+    # Normalize column names so the rest of the app can keep using the original names
+    gdf = gdf.rename(columns={
+        "occurred_date": "occurred_at",
+        "accident_geom": "geom",
+        "accident_lon": "lon",
+        "accident_lat": "lat",
+    })
+
+    # Ensure geometry column is set correctly after rename
+    gdf = gdf.set_geometry("geom")
+
     gdf["occurred_at"] = pd.to_datetime(gdf["occurred_at"])
-    
+
     return gdf
 
 

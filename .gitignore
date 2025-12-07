@@ -2,3 +2,5 @@
 .venv
 .vscode/settings.json
 *.pyc
+.streamlit/secrets.toml
+

@@ -91,6 +91,7 @@ ORDER BY w.date;
 """
 
 # Table for accident analysis with weather data
+# Optimized for cloud storage - removed community_geom (dashboard only needs district_name text)
 create_acc_fact_table = """
 CREATE TABLE accident_facts (
     occurred_date TIMESTAMP NOT NULL,
@@ -102,7 +103,6 @@ CREATE TABLE accident_facts (
     accident_lon FLOAT NOT NULL,
     accident_lat FLOAT NOT NULL,
     accident_geom GEOMETRY(POINT, 4326),
-    community_geom GEOMETRY(MULTIPOLYGON, 4326),
     PRIMARY KEY (occurred_date, accident_lon, accident_lat)
 );
     
@@ -127,8 +127,7 @@ INSERT INTO accident_facts (
     total_precip_mm,
     accident_lon,
     accident_lat,
-    accident_geom,
-    community_geom
+    accident_geom
 )
 SELECT DISTINCT ON (occurred_date, accident_lon, accident_lat) -- will keep the last modified_dt
     ti.start_dt::timestamp AS occurred_date,
@@ -139,8 +138,7 @@ SELECT DISTINCT ON (occurred_date, accident_lon, accident_lat) -- will keep the 
     w.total_precip_mm,
     ST_X(ti.geometry) AS accident_lon,
     ST_Y(ti.geometry) AS accident_lat,
-    ti.geometry AS accident_geom,
-    cb.geometry AS community_geom
+    ti.geometry AS accident_geom
 FROM traffic_incidents ti
 LEFT JOIN community_boundaries cb
     ON ST_Contains(cb.geometry, ti.geometry)
@@ -151,12 +149,11 @@ ORDER BY occurred_date, accident_lon, accident_lat, ti.modified_dt DESC
 ON CONFLICT (occurred_date, accident_lon, accident_lat) DO UPDATE 
 SET
     modified_dt = EXCLUDED.modified_dt,
- district_name = EXCLUDED.district_name,
+    district_name = EXCLUDED.district_name,
     min_temp_c = EXCLUDED.min_temp_c,
     max_temp_c = EXCLUDED.max_temp_c,
     total_precip_mm = EXCLUDED.total_precip_mm,
-    accident_geom = EXCLUDED.accident_geom,
-    community_geom = EXCLUDED.community_geom
+    accident_geom = EXCLUDED.accident_geom
 WHERE accident_facts.modified_dt < EXCLUDED.modified_dt;
 """
 
