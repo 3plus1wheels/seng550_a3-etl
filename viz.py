@@ -24,8 +24,10 @@ import pydeck as pdk
 
 # Load .env file for local development (override=True to override system env vars)
 # Use an explicit path so Streamlit's working directory won't affect finding the file
-env_path = Path(__file__).parent.joinpath('.env')
-load_dotenv(dotenv_path=env_path, override=True)
+# ONLY load .env (not .env.example which may have localhost config)
+env_path = Path(__file__).parent / '.env'
+if env_path.exists():
+    load_dotenv(dotenv_path=env_path, override=True)
 
 # Build database connection string.
 # New order of precedence (local-first):
@@ -40,38 +42,38 @@ if env_path.exists():
 
 connection_string = None
 
-# 1) Prefer repo .env DATABASE_URL when present (local-first)
-if file_db_url:
-    connection_string = file_db_url
-else:
-    # 2) Streamlit secrets (cloud)
-    if hasattr(st, "secrets") and st.secrets and len(st.secrets) > 0:
-        secrets = st.secrets
-        connection_string = (
-            secrets.get("DATABASE_URL")
-            or secrets.get("DB_URL")
-        )
-        if not connection_string:
-            for v in secrets.values():
-                if isinstance(v, str) and v.startswith("postgres") and "@" in v:
-                    connection_string = v
-                    break
-        if not connection_string and "PGHOST" in secrets:
-            host = secrets.get("PGHOST")
-            port = str(secrets.get("PGPORT", "5432"))
-            dbname = secrets.get("PGDB")
-            user = secrets.get("PGUSER")
-            password = secrets.get("PGPASSWORD")
-            connection_string = f"postgresql://{user}:{password}@{host}:{port}/{dbname}"
-
-    # 3) process environment (fallback)
+# 1) Prefer Streamlit secrets when present (cloud authoritative)
+if hasattr(st, "secrets") and st.secrets and len(st.secrets) > 0:
+    secrets = st.secrets
+    connection_string = (
+        secrets.get("DATABASE_URL")
+        or secrets.get("DB_URL")
+    )
     if not connection_string:
-        host = os.getenv("PGHOST", "localhost")
-        port = os.getenv("PGPORT", "5432")
-        dbname = os.getenv("PGDB", "a3_db")
-        user = os.getenv("PGUSER", "postgres")
-        password = os.getenv("PGPASSWORD", "")
+        for v in secrets.values():
+            if isinstance(v, str) and v.startswith("postgres") and "@" in v:
+                connection_string = v
+                break
+    if not connection_string and "PGHOST" in secrets:
+        host = secrets.get("PGHOST")
+        port = str(secrets.get("PGPORT", "5432"))
+        dbname = secrets.get("PGDB")
+        user = secrets.get("PGUSER")
+        password = secrets.get("PGPASSWORD")
         connection_string = f"postgresql://{user}:{password}@{host}:{port}/{dbname}"
+
+# 2) repo .env DATABASE_URL (local development)
+if not connection_string and file_db_url:
+    connection_string = file_db_url
+
+# 3) process environment (fallback)
+if not connection_string:
+    host = os.getenv("PGHOST", "localhost")
+    port = os.getenv("PGPORT", "5432")
+    dbname = os.getenv("PGDB", "a3_db")
+    user = os.getenv("PGUSER", "postgres")
+    password = os.getenv("PGPASSWORD", "")
+    connection_string = f"postgresql://{user}:{password}@{host}:{port}/{dbname}"
 
 # Final fallback: read .env file directly if the process env still points to localhost
 if connection_string and ("localhost" in connection_string or "127.0.0.1" in connection_string):
