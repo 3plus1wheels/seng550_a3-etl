@@ -110,29 +110,15 @@ if cs.startswith("psql "):
 if (cs.startswith("'") and cs.endswith("'")) or (cs.startswith('"') and cs.endswith('"')):
     cs = cs[1:-1]
 
-def _mask_pw(s: str) -> str:
-    try:
-        proto, rest = s.split('://', 1)
-        creds, hostpart = rest.split('@', 1)
-        if ':' in creds:
-            user, pw = creds.split(':', 1)
-            return f"{proto}://{user}:***@{hostpart}"
-    except Exception:
-        return s
-masked = _mask_pw(cs)
-
-# Show which connection string source is being used (masked)
-st.info(f"Using DB connection: {masked}")
-
+# Create database engine
 try:
-    # If connecting to localhost, don't force SSL connect args
     if "localhost" in cs or "127.0.0.1" in cs:
         engine = create_engine(cs)
     else:
         # For cloud DBs (Neon/Supabase) ensure SSL mode is passed to the DBAPI
         engine = create_engine(cs, connect_args={"sslmode": "require"})
 except Exception as e:
-    st.error(f"Failed to create DB engine from connection string: {masked}\n\nError: {e}")
+    st.error(f"Database connection failed. Please check your configuration.\n\nError: {e}")
     st.stop()
 
 
