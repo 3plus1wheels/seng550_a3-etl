@@ -152,7 +152,8 @@ def load_accidents_detailed():
             max_temp_c,
             total_precip_mm,
             accident_lon,
-            accident_lat
+            accident_lat,
+            community_geom
         FROM accident_facts;  -- ← Using materialized view now
     """
     # Read using actual geom column name from the table
@@ -191,6 +192,19 @@ def load_districts_with_counts():
     return gdf
 
 @st.cache_data(ttl=300)
+def load_community_boundaries():
+    """Load community boundaries from accident_facts for filtered accidents."""
+    query = """
+        SELECT DISTINCT
+            district_name,
+            community_geom
+        FROM accident_facts
+        WHERE community_geom IS NOT NULL;
+    """
+    gdf = gpd.read_postgis(query, engine, geom_col="community_geom")
+    return gdf
+
+@st.cache_data(ttl=300)
 def load_daily_weather_accidents():
     """ Load daily weather and accident counts."""
     query = """
@@ -215,6 +229,7 @@ try:
     acc = load_accidents_detailed()
     districts = load_districts_with_counts()
     daily_stats = load_daily_weather_accidents()
+    communities = load_community_boundaries()
 except Exception as e:
     st.error(f"Error loading data: {e}")
     st.stop()
@@ -285,6 +300,7 @@ wet_only = st.sidebar.checkbox("Wet conditions only (precipitation > 0)", value=
 # Map visualization type
 st.sidebar.subheader("Map Display")
 show_choropleth = st.sidebar.checkbox("Show choropleth (by district)", value=False)
+show_boundaries = st.sidebar.checkbox("Show community boundaries", value=True)
 
 
 # PART 2: FILTER DATA BASED ON SIDEBAR INPUTS
@@ -382,6 +398,48 @@ with col_map:
             
         else:
             # Scatter plot: individual accident points
+            layers = []
+            
+            # Add community boundaries layer if enabled
+            if show_boundaries and not communities.empty:
+                # Get unique communities from filtered accidents
+                filtered_communities = acc[mask]["district_name"].dropna().unique()
+                boundary_data = communities[communities["district_name"].isin(filtered_communities)].copy()
+                
+                if not boundary_data.empty:
+                    # Convert geometry to GeoJSON format
+                    boundary_data["coordinates"] = boundary_data["community_geom"].apply(
+                        lambda x: json.loads(gpd.GeoSeries([x]).to_json())["features"][0]["geometry"]["coordinates"]
+                    )
+                    
+                    layers.append(
+                        pdk.Layer(
+                            'GeoJsonLayer',
+                            data=boundary_data,
+                            opacity=0.3,
+                            stroked=True,
+                            filled=True,
+                            extruded=False,
+                            wireframe=True,
+                            get_fill_color=[100, 100, 100, 50],
+                            get_line_color=[255, 255, 255, 150],
+                            line_width_min_pixels=1,
+                            pickable=True,
+                        )
+                    )
+            
+            # Add accident points layer
+            layers.append(
+                pdk.Layer(
+                    'ScatterplotLayer',
+                    data=filt_acc,
+                    get_position='[lon, lat]',
+                    get_color='[200, 30, 0, 160]',
+                    get_radius=50,
+                    pickable=True,
+                )
+            )
+            
             st.pydeck_chart(pdk.Deck(
                 map_style='mapbox://styles/mapbox/dark-v10',
                 initial_view_state=pdk.ViewState(
@@ -390,16 +448,11 @@ with col_map:
                     zoom=10.5,
                     pitch=0,
                 ),
-                layers=[
-                    pdk.Layer(
-                        'ScatterplotLayer',
-                        data=filt_acc,
-                        get_position='[lon, lat]',
-                        get_color='[200, 30, 0, 160]',
-                        get_radius=50,
-                        pickable=True,
-                    ),
-                ],
+                layers=layers,
+                tooltip={
+                    "html": "<b>{district_name}</b>",
+                    "style": {"backgroundColor": "steelblue", "color": "white"}
+                }
             ))
 
 with col_summary:
