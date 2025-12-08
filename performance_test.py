@@ -28,6 +28,13 @@ FROM accident_geo_view
 GROUP BY district_name;
 """
 
+# Test fact table performance
+fact_table_query = """
+SELECT district_name, COUNT(*) AS accident_count
+FROM accident_facts
+GROUP BY district_name;
+"""
+
 def benchmark(query, runs=3):
     # runs a query multiple times (3) and calculates the average speed 
     times = []
@@ -76,3 +83,8 @@ print(f"With indexes: {time_with_idx:>8.1f} ms ({speedup_idx:.1f}x faster)")
 time_mat_view = benchmark(view_query)
 speedup_view = time_no_idx / time_mat_view
 print(f"Materialized view: {time_mat_view:>8.1f} ms ({speedup_view:.1f}x faster)")
+
+# With Fact table
+time_fact_table = benchmark(fact_table_query)
+speedup_fact = time_no_idx / time_fact_table
+print(f"Fact table: {time_fact_table:>8.1f} ms ({speedup_fact:.1f}x faster)")

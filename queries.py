@@ -91,24 +91,20 @@ ORDER BY w.date;
 """
 
 # Table for accident analysis with weather data
+# Optimized for cloud storage - removed community_geom (dashboard only needs district_name text)
 create_acc_fact_table = """
-CREATE TABLE IF NOT EXISTS accident_facts (
-    ti.id AS incident_id,
-    ti.start_dt::date AS occurred_date,
-    ti.modified_dt AS modified_dt,
-    cb.name AS community_name,
-    w.min_temp_c,
-    w.max_temp_c,
-    w.total_precip_mm,
-    ST_X(ti.geometry) AS accident_lon,
-    ST_Y(ti.geometry) AS accident_lat,
-    ti.geometry AS accident_geom,
-    cb.geometry AS community_geom
-FROM traffic_incidents ti
-LEFT JOIN community_boundaries cb
-    ON ST_Contains(cb.geometry, ti.geometry)
-LEFT JOIN weather w
-    ON ti.start_dt::date = w.date;
+CREATE TABLE accident_facts (
+    occurred_date TIMESTAMP NOT NULL,
+    modified_dt TIMESTAMP,
+    district_name TEXT,
+    min_temp_c FLOAT,
+    max_temp_c FLOAT,
+    total_precip_mm FLOAT,
+    accident_lon FLOAT NOT NULL,
+    accident_lat FLOAT NOT NULL,
+    accident_geom GEOMETRY(POINT, 4326),
+    PRIMARY KEY (occurred_date, accident_lon, accident_lat)
+);
     
 -- Indexes for fast querying
 CREATE INDEX IF NOT EXISTS idx_accident_facts_geom
@@ -116,48 +112,50 @@ CREATE INDEX IF NOT EXISTS idx_accident_facts_geom
 CREATE INDEX IF NOT EXISTS idx_accident_facts_date
     ON accident_facts (occurred_date);
 CREATE INDEX IF NOT EXISTS idx_accident_facts_community
-    ON accident_facts (community_name);
+    ON accident_facts  (district_name);
 CREATE INDEX IF NOT EXISTS idx_accident_facts_precip
     ON accident_facts (total_precip_mm);
 """
 
 update_acc_fact_data = """
 INSERT INTO accident_facts (
-    incident_id,
     occurred_date,
     modified_dt,
-    community_name,
+    district_name,
     min_temp_c,
     max_temp_c,
     total_precip_mm,
-    geometry
+    accident_lon,
+    accident_lat,
+    accident_geom
 )
-SELECT
-    ti.id AS incident_id,
-    ti.start_dt::date AS occurred_date,
-    ti.modified_dt AS modified_dt,
-    cb.name AS community_name,
+SELECT DISTINCT ON (occurred_date, accident_lon, accident_lat) -- will keep the last modified_dt
+    ti.start_dt::timestamp AS occurred_date,
+    ti.modified_dt::timestamp AS modified_dt,
+    cb.name AS district_name,
     w.min_temp_c,
     w.max_temp_c,
     w.total_precip_mm,
-    ti.geometry
+    ST_X(ti.geometry) AS accident_lon,
+    ST_Y(ti.geometry) AS accident_lat,
+    ti.geometry AS accident_geom
 FROM traffic_incidents ti
 LEFT JOIN community_boundaries cb
     ON ST_Contains(cb.geometry, ti.geometry)
 LEFT JOIN weather w
-    ON ti.start_dt::date = w.date
-ON CONFLICT (incident_id) DO UPDATE 
+    ON ti.start_dt::timestamp::date = w.date
+WHERE ti.geometry IS NOT NULL
+ORDER BY occurred_date, accident_lon, accident_lat, ti.modified_dt DESC
+ON CONFLICT (occurred_date, accident_lon, accident_lat) DO UPDATE 
 SET
-    occurred_date = EXCLUDED.occurred_date,
     modified_dt = EXCLUDED.modified_dt,
-    community_name = EXCLUDED.community_name,
+    district_name = EXCLUDED.district_name,
     min_temp_c = EXCLUDED.min_temp_c,
     max_temp_c = EXCLUDED.max_temp_c,
     total_precip_mm = EXCLUDED.total_precip_mm,
-    geometry = EXCLUDED.geometry;
-WHERE accident_facts.modified_dt < EXCLUDED.modified_dt; -- only update if new data is more recent
+    accident_geom = EXCLUDED.accident_geom
+WHERE accident_facts.modified_dt < EXCLUDED.modified_dt;
 """
-
 
 
 # Accidents with weather conditions at time and location of accident -

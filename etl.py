@@ -1,5 +1,7 @@
-etl.py
+# etl.py
 import os
+import sys
+import argparse
 from meteostat import Point, Daily, Hourly
 from datetime import datetime
 import pandas as pd
@@ -10,7 +12,7 @@ import json
 from sqlalchemy import create_engine, text
 from queries import create_acc_fact_table, update_acc_fact_data
 
-load_dotenv()
+load_dotenv(override=True)
 
 # API endpoints
 API_TRAFFIC = os.getenv("API_TRAFFIC_ENDPOINT")
@@ -27,12 +29,29 @@ PGPASSWORD = os.getenv("PGPASSWORD")
 def get_db_engine(database_name=None):
     """Create SQLAlchemy engine for PostgreSQL"""
     db_name = database_name or PGDB
-    connection_string = f"postgresql://{PGUSER}:{PGPASSWORD}@{PGHOST}:{PGPORT}/{db_name}"
-    return create_engine(connection_string)
+    # Prefer full DATABASE_URL if present
+    connection_string = os.getenv("DATABASE_URL")
+    if not connection_string:
+        connection_string = f"postgresql://{PGUSER}:{PGPASSWORD}@{PGHOST}:{PGPORT}/{db_name}"
+        # Add SSL mode for cloud databases (required by Neon, Supabase, etc.)
+        if PGHOST and PGHOST != "localhost" and "127.0.0.1" not in PGHOST:
+            connection_string += "?sslmode=require"
+    # Sanitize possible psql prefix/quotes
+    cs = connection_string.strip()
+    if cs.startswith("psql "):
+        cs = cs[len("psql "):].strip()
+    if (cs.startswith("'") and cs.endswith("'")) or (cs.startswith('"') and cs.endswith('"')):
+        cs = cs[1:-1]
+    return create_engine(cs)
 
 def create_database_if_not_exists(db_name):
     """Create PostgreSQL database if it doesn't exist"""
     try:
+        # Skip database creation for managed/cloud hosts (they provide the DB)
+        if PGHOST and PGHOST != "localhost" and "127.0.0.1" not in PGHOST:
+            print("Skipping automatic database creation on cloud-managed host")
+            return
+
         # Connect to default postgres database to create new database
         admin_engine = get_db_engine("postgres")
         
@@ -162,6 +181,17 @@ def json_to_dataframe(data):
 def load_to_postgres(df, table_name, engine, if_exists='replace', has_geometry=False):
     """Load DataFrame to PostgreSQL table with optional PostGIS geometry handling"""
     try:
+        # Drop dependent materialized views first if replacing tables
+        if if_exists == 'replace':
+            with engine.connect() as conn:
+                if table_name in ['traffic_incidents', 'community_boundaries', 'weather']:
+                    try:
+                        conn.execute(text("DROP MATERIALIZED VIEW IF EXISTS accident_geo_view CASCADE;"))
+                        conn.commit()
+                        print(f"Dropped dependent views for {table_name}")
+                    except Exception as e:
+                        print(f"Note: {e}")
+        
         # Load data to PostgreSQL
         df.to_sql(table_name, engine, if_exists=if_exists, index=False)
         
@@ -276,17 +306,38 @@ def create_materialized_view(engine):
         result = conn.execute(text("SELECT COUNT(*) FROM accident_geo_view;"))
         count = result.scalar()
 
-def create_accident_analysis_table(engine):
-    #Create denormalized table for FAST accident analysis (will not be deleted on reruns)
+def create_accident_analysis_table(engine, drop_if_exists=False):
+    #Create denormalized table for FAST accident analysis
     
     with engine.connect() as conn:
-        conn.execute(text(create_acc_fact_table))
-        conn.commit()
+        # Check if table exists first
+        exists = conn.execute(text("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_schema = 'public' 
+                AND table_name = 'accident_facts'
+            );
+        """))
+        table_exists = exists.scalar()
+
+        if table_exists and drop_if_exists:
+            print("Dropping existing accident_facts table to recreate with new schema...")
+            conn.execute(text("DROP TABLE IF EXISTS accident_facts CASCADE;"))
+            conn.commit()
+            table_exists = False
+
+        if not table_exists:
+            print("Creating accident analysis table...")
+            conn.execute(text(create_acc_fact_table))
+            conn.commit()
+        else:
+            print("Accident analysis table already exists, skipping creation...")
+            return
         
         # Show row count
-        result = conn.execute(text("SELECT COUNT(*) FROM acc_facts;"))
+        result = conn.execute(text("SELECT COUNT(*) FROM accident_facts;"))
         count = result.scalar()
-        print(f"Accident analysis table created with {count} records\n")
+        print(f"Accident analysis table has {count} records\n")
         
 def update_accident_analysis_table(engine):
     #Update denormalized table for SPEEDY accident analysis. This upserts existing table.
@@ -296,14 +347,21 @@ def update_accident_analysis_table(engine):
         conn.commit()
         
         # Show row count
-        result = conn.execute(text("SELECT COUNT(*) FROM acc_facts;"))
+        result = conn.execute(text("SELECT COUNT(*) FROM accident_facts;"))
         count = result.scalar()
         print(f"Accident analysis table updated with {count} records\n")
         
 
 
 def main():
-    # Create the PostGIS database
+    # Parse CLI args / env for optional reset
+    parser = argparse.ArgumentParser(description="Run ETL to load data into Postgres/PostGIS")
+    parser.add_argument("--reset-accident-facts", action="store_true", help="Drop and recreate accident_facts table before loading")
+    args, unknown = parser.parse_known_args()
+
+    reset_facts = args.reset_accident_facts or os.getenv("RESET_ACCIDENT_FACTS", "0") == "1"
+
+    # Create the PostGIS database (skipped for cloud-managed DBs)
     create_database_if_not_exists("a3_db")
     
     # Connect to the new database
@@ -329,7 +387,8 @@ def main():
     if traffic_data:
         traffic_df = json_to_dataframe(traffic_data)
         # Available: ['count', 'latitude', 'description', 'incident_info', 'start_dt', 'modified_dt', 'longitude', 'id', 'quadrant', 'geometry']
-        traffic_clean = traffic_df[['start_dt','geometry', 'modified_dt', 'id']]
+        
+        traffic_clean = traffic_df[['start_dt', 'geometry', 'modified_dt']].copy()
         
         load_to_postgres(traffic_clean, 'traffic_incidents', engine, has_geometry=True)
     else:
@@ -350,7 +409,8 @@ def main():
     create_materialized_view(engine)
     
     # ========== 4. CREATE ACCIDENT ANALYSIS TABLE (denormalized table) ====================
-    create_accident_analysis_table(engine)
+    # Create accident analysis table; optionally drop and recreate if reset requested
+    create_accident_analysis_table(engine, drop_if_exists=reset_facts)
     update_accident_analysis_table(engine)
 
 if __name__ == "__main__":
