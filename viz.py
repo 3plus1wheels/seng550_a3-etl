@@ -9,7 +9,7 @@ Used for streamlit:
 import geopandas as gpd
 from sqlalchemy import create_engine
 import os
-from dot_env import load_dotenv
+from dotenv import load_dotenv
 import json
 import pandas as pd
 import streamlit as st
@@ -103,13 +103,13 @@ def load_daily_weather_accidents():
         SELECT
             w.date,
             COUNT(ti.*) AS accident_count,
-            w.total_precip_mm
+            w.total_precip_mm,
             w.min_temp_c,
             w.max_temp_c
         FROM weather w
         LEFT JOIN traffic_incidents ti
             ON w.date = ti.start_dt::date
-        GROUP BY w.date, w.total_precip_mm, w.min_temp_c, w.max_temp_c;
+        GROUP BY w.date, w.total_precip_mm, w.min_temp_c, w.max_temp_c
         ORDER BY w.date;
     """
     df = pd.read_sql(query, engine, parse_dates=["date"])
@@ -175,8 +175,8 @@ wet_only = st.sidebar.checkbox("Wet conditions only (precipitation > 0)", value=
 
 # Apply filters to acc DataFrame
 mask = (
-    (acc["occured_at"].dt.date >= date_range[0]) &
-    (acc["occured_at"].dt.date <= date_range[1])
+    (acc["start_dt"].dt.date >= date_range[0]) &
+    (acc["start_dt"].dt.date <= date_range[1])
 )
 
 if selected_districts:
